@@ -5,34 +5,47 @@ namespace LogAndReadBackEnd.Controllers
     using System.Security.Cryptography;
     using System.Text;
     using System.Threading.Tasks;
-    using LogAndReadBackEnd.Data;
-    using LogAndReadBackEnd.DTOs;
-    using LogAndReadBackEnd.Entities;
-    using LogAndReadBackEnd.Services;
+    using Data;
+    using DTOs;
+    using Entities;
+    using Services;
     using Microsoft.AspNetCore.Mvc;
     using Microsoft.EntityFrameworkCore;
 
     public class AccountController : BaseController
     {
-        private readonly DataContext context;
-        private readonly ITokenService tokenService;
+        private readonly DataContext _context;
+        private readonly ITokenService _tokenService;
 
         public AccountController(DataContext context, ITokenService tokenService)
         {
-            context = context;
-            tokenService = tokenService;
+            this._context = context;
+            this._tokenService = tokenService;
         }
 
         [HttpPost("/register")]
-        public async Task<ActionResult<UserDto>> register([FromBody]RegisterDto registerDto)
+        public async Task<ActionResult<UserDto>> Register([FromBody]RegisterDto registerDto)
         {
-            if (await userExists(registerDto.Username))
+            if (await UserExists(registerDto.Username))
             {
                 return BadRequest("Username is Taken");
             }
 
-            using var hmac = new HMACSHA512();
+            var user = CreateWebUser(registerDto);
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
         
+            return new UserDto
+            {
+                Username = registerDto.Username,
+                Token = _tokenService.CreateToken(user)
+            };
+        }
+
+        private static WebUser CreateWebUser(RegisterDto registerDto)
+        {
+            using var hmac = new HMACSHA512();
+
             var user = new WebUser
             {
                 Username = registerDto.Username.ToLower(),
@@ -40,27 +53,21 @@ namespace LogAndReadBackEnd.Controllers
                 PasswordSalt = hmac.Key,
                 CreationTime = DateTime.Now
             };
-            context.Users.Add(user);
-            await context.SaveChangesAsync();
-        
-            return new UserDto
-            {
-                Username = registerDto.Username,
-                Token = tokenService.CreateToken(user)
-            };
+            return user;
         }
 
         [HttpPost("login")]
-        public async Task<ActionResult<UserDto>> logIn([FromBody] LoginDto loginDto)
+        public async Task<ActionResult<UserDto>> LogIn([FromBody] LoginDto loginDto)
         {
-            var u = await context.Users.SingleOrDefaultAsync(user => user.Username == loginDto.Username);
-            if (u == null)
-            { return Unauthorized("Invalid username");
+            var user = await _context.Users.SingleOrDefaultAsync(user => user.Username == loginDto.Username);
+            if (user == null)
+            { 
+                return Unauthorized("Invalid username");
             }
 
-            using var hmac = new HMACSHA512(u.Password);
+            using var hmac = new HMACSHA512(user.PasswordSalt);
             var computedHash = hmac.ComputeHash(Encoding.UTF8.GetBytes(loginDto.Password));
-            if (!computedHash.SequenceEqual(u.Password))
+            if (!computedHash.SequenceEqual(user.Password))
             {
                 return Unauthorized("Invalid password");
 
@@ -68,15 +75,15 @@ namespace LogAndReadBackEnd.Controllers
 
             return new UserDto
             {
-                Id = u.Id,
-                Username = u.Username,
-                Token = tokenService.CreateToken(u)
+                Id = user.Id,
+                Username = user.Username,
+                Token = _tokenService.CreateToken(user)
             };
         }
 
-        private Task<bool> userExists(string username)
+        private Task<bool> UserExists(string username)
         {
-            return context.Users.AnyAsync(user => user.Username == username);
+            return _context.Users.AnyAsync(user => user.Username == username);
         }
     }
 }
